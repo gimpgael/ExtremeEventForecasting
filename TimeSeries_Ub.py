@@ -2,7 +2,10 @@
 The idea of this approach comes from a Uber article, linked below, 
 https://eng.uber.com/neural-networks/
 
-himself derived from another paper:
+Also linked to a presentation
+https://forecasters.org/wp-content/uploads/gravity_forms/7-c6dd08fee7f0065037affb5b74fec20a/2017/07/Laptev_Nikolay_ISF2017.pdf
+
+itself linked to another paper:
 https://robjhyndman.com/papers/icdm2015.pdf
 
 The idea was to develop time series approach in order to model extrem events. I
@@ -12,8 +15,6 @@ and the below implementation concern the seasonality. Indeed the frequency of
 data is not the same, we are designing here to work in a daily basis, so the
 seasonality and its derivatives are not relevant as features, and so are not
 coded.
-
-https://forecasters.org/wp-content/uploads/gravity_forms/7-c6dd08fee7f0065037affb5b74fec20a/2017/07/Laptev_Nikolay_ISF2017.pdf
 
 """
 
@@ -28,6 +29,15 @@ from scipy.stats import entropy
 from keras.layers import Input, LSTM, RepeatVector
 from keras.models import Model, Sequential
 from keras.layers.core import Dense
+
+from sklearn.preprocessing import StandardScaler
+
+from keras.callbacks import ModelCheckpoint
+from keras.models import load_model
+
+import matplotlib.pyplot as plt
+
+np.random.seed(42)
 
 class TimeSeries_Ub():
     """Time Series modelling based on the initial Uber article. The first part
@@ -51,7 +61,6 @@ class TimeSeries_Ub():
     
     def __init__(self, window):
         """Initialize the algorithm, with a fixed rolling window"""
-        
         self.window = window
         
     def _extract_time_series(self, x, i, taille):
@@ -61,7 +70,7 @@ class TimeSeries_Ub():
         
         # Need to differentiate the last case
         if i != taille:
-            x_int = x[x.index[i-self.window]:x.index[i]]
+            x_int = x[x.index[i-self.window]:x.index[i-1]]
         else:
             x_int = x[x.index[i-self.window]:]
         
@@ -218,21 +227,23 @@ class TimeSeries_Ub():
         
         return pd.concat([res, res_diff], axis = 1)
     
-    def sequential_autoencoder(self, x, num_layer, timesteps = 5):
+    def sequential_autoencoder(self, x, num_layers, timesteps = 5):
         """LSTM Autoencoder to extract high level features
-        Note that hear the x input is still at a format [m,n] where m are dates 
-        and n are the features. The sequence length is still given by timesteps
+        Note that the x input is still in a raw format [m,n] where m are dates 
+        and n are the features. The sequence length is still given by timesteps,
+        and some data manipulation needs to be made before inputing the data in
+        the model. This is why there is the function create_variable_for_model
         """
         
         # Input
         inputs = Input(shape = (timesteps, x.shape[1]))
         
         # Encoder
-        encoder = LSTM(num_layer)(inputs)
+        encoder = LSTM(num_layers, activation = 'tanh')(inputs)
         
         # Decoder
         decoder = RepeatVector(timesteps)(encoder)
-        decoder = LSTM(x.shape[1], return_sequences = True)(decoder)
+        decoder = LSTM(x.shape[1], return_sequences = True, activation = 'tanh')(decoder)
         
         # Models
         sequential_autoencoder = Model(inputs, decoder)
@@ -244,14 +255,17 @@ class TimeSeries_Ub():
     
     def forecast_model(self, x, num_layers, timesteps = 5):
         """LSTM model for forecasting. 
-        Note that hear the x input is still at a format [m,n] where m are dates 
-        and n are the features. The sequence length is still given by timesteps
+        Note that the x input is still in a raw format [m,n] where m are dates 
+        and n are the features. The sequence length is still given by timesteps,
+        and some data manipulation needs to be made before inputing the data in
+        the model. This is why there is the function create_variable_for_model
         """
         
         # LSTM Model
         model = Sequential()
-        model.add(LSTM(units = num_layers, input_shape = (None, timesteps, x.shape[1])))
-        model.add(Dense(1))
+        model.add(LSTM(units = num_layers, input_shape = (timesteps, x.shape[1]),
+                       activation = 'tanh'))
+        model.add(Dense(1, activation = None))
         model.compile(loss = 'mean_squared_error', optimizer = 'adam')
         
         return model
@@ -265,9 +279,6 @@ class TimeSeries_Ub():
         
         # Create the output
         for idx in range(x.shape[0] - timesteps):
-            res.append(x[idx:idx+timesteps])
+            res.append(x[idx:idx+timesteps,:])
         
         return np.array(res)
-        
-        
-        
