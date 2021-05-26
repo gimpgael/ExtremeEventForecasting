@@ -1,4 +1,11 @@
 """
+Algorithm to forecast time series. Based on a time series, the algorithm:
+    - Generates a set of features, pre-coded
+    - Compresses these data through an autoencoder
+    - Inputs then the data into a LSTM model
+Note that the code is quite raw, so do not hesitate to make the modifications
+directly in the class as you wish.
+
 The idea of this approach comes from a Uber article, linked below, 
 https://eng.uber.com/neural-networks/
 
@@ -19,25 +26,21 @@ coded.
 """
 
 # Import librairies
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 import statsmodels.api as sm
 
 from scipy.stats import entropy
-
-from keras.layers import Input, LSTM, RepeatVector
-from keras.models import Model, Sequential
-from keras.layers.core import Dense
-
 from sklearn.preprocessing import StandardScaler
 
+from keras.layers import Input, LSTM, RepeatVector
+from keras.models import Model, Sequential, load_model
+from keras.layers.core import Dense
 from keras.callbacks import ModelCheckpoint
-from keras.models import load_model
-
-import matplotlib.pyplot as plt
 
 np.random.seed(42)
+
 
 class TimeSeries_Ub():
     """Time Series modelling based on the initial Uber article. The first part
@@ -49,9 +52,11 @@ class TimeSeries_Ub():
     Attributes
     -----------------   
     - window: rolling window of the time series used to create variables
+    - autoencoder_activation: activation function to be used by the autoencoder
+    - model_activation: activation function to be used by the model
     
     Usage
-    - compute_time_series_features: computes the time series features
+    - initialize_dataset: computes the time serie features
     - sequential_autoencoder: autoencoder
     - create_variable_for_model: create the variable to be inputed in the 
     recurrent neural network
@@ -59,41 +64,49 @@ class TimeSeries_Ub():
         
     """
     
-    def __init__(self, window):
-        """Initialize the algorithm, with a fixed rolling window"""
+    def __init__(self, window, autoencoder_activation, model_activation):
+        """Initialize the algorithm, with a fixed rolling window
+        :param window: (int)
+        """
         self.window = window
+        self.autoencoder_activation = autoencoder_activation
+        self.model_activation = model_activation
         
     def _extract_time_series(self, x, i, taille):
         """Function extracting the sub time series from a pandas Series. We use
         this function  because the pandas Series does not have same properties
-        as numpy array"""
+        as numpy array.
+        :param x: (pandas Series) time series
+        :param i: (int) index 
+        :param taille: (int)
+        """
         
         # Need to differentiate the last case
         if i != taille:
-            x_int = x[x.index[i-self.window]:x.index[i-1]]
+            x_int = x[x.index[i-self.window]:x.index[i]]
         else:
             x_int = x[x.index[i-self.window]:]
         
         return x_int
         
     def ts_mean(self, x):
-        """Computes the time series mean for a rolling window"""
-        
-        # Change name
+        """Computes the time series mean for a rolling window
+        :param x: (pandas Series) time series
+        """
         x.name = 'average'
-        
         return x.rolling(self.window).mean()
     
     def ts_var(self, x):
-        """Computes the time series variance for a rolling window"""
-        
-        # Change name
+        """Computes the time series variance for a rolling window
+        :param x: (pandas Series) time series
+        """
         x.name = 'variance'
-        
         return x.rolling(self.window).var()
     
     def ts_autocorrelation(self, x):
-        """Computes the time series autocorrelation for a rolling window"""
+        """Computes the time series autocorrelation for a rolling window
+        :param x: (pandas Series) time series
+        """
         
         # Initialize output
         res = pd.Series(data = None, index = x.index, name = 'autocorr')
@@ -105,7 +118,9 @@ class TimeSeries_Ub():
         return res
     
     def ts_entropy(self, x):
-        """Computes the time series entropy for a rolling window"""
+        """Computes the time series entropy for a rolling window
+        :param x: (pandas Series) time series
+        """
         
         # Initialize output
         res = pd.Series(data = None, index = x.index, name = 'entropy')
@@ -118,7 +133,9 @@ class TimeSeries_Ub():
     
     def ts_trend(self, x):
         """Computes the trend coefficient and the variance of the residuals of
-        the time series versus the trend, for a rolling window"""
+        the time series versus the trend, for a rolling window
+        :param x: (pandas Series) time series
+        """
         
         # Initialize outputs
         res1 = pd.Series(data = None, index = x.index, name = 'trend')
@@ -149,7 +166,9 @@ class TimeSeries_Ub():
         return res1, res2, res3
     
     def ts_spike(self, x):
-        """Computes the spike of a time series, for a rolling window"""
+        """Computes the spike of a time series, for a rolling window
+        :param x: (pandas Series) time series
+        """
         
         # Initialize output
         res = pd.Series(data = None, index = x.index, name = 'spike')
@@ -164,22 +183,21 @@ class TimeSeries_Ub():
         return res
     
     def function_spike(self, x):
-        """Computes the spike function for a time series"""
+        """Computes the spike function for a time series
+        :param x: (pandas Series) time series
+        """
         
         # Computes the max and min spikes versus the average
         M, m = x.max() - x.mean(), x.min() - x.mean()
         
-        # Return the biggest spike
-        if np.abs(M) > np.abs(m):
-            xtrm = M
-        else:
-            xtrm = m
-            
-        return xtrm
+        # Return the biggest spike    
+        return M if np.abs(M) > np.abs(m) else m
     
     def ts_crossing_points(self, x):
         """Computes the number of times the mean is crossed by the time series 
-        for a rolling window"""
+        for a rolling window
+        :param x: (pandas Series) time series
+        """
         
         # Initialize output
         res = pd.Series(data = None, index = x.index, name = 'crossing_points')
@@ -194,7 +212,9 @@ class TimeSeries_Ub():
         return res
             
     def function_crossing_points(self, x):
-        """Computes the number of times the times series cross its mean"""
+        """Computes the number of times the times series cross its mean
+        :param x: (pandas Series) time series
+        """
         
         # Reduce the mean
         x = np.sign(x - x.mean())
@@ -204,7 +224,9 @@ class TimeSeries_Ub():
         return np.abs(x).sum() / 2
 
     def compute_time_series_features(self, x):
-        """Computes the different features of the time series"""
+        """Computes the different features of the time series
+        :param x: (pandas Series) time series
+        """
         
         # In case, transform the initial input into a pandas Series
         x = pd.Series(x, name = 'time_series')
@@ -227,23 +249,39 @@ class TimeSeries_Ub():
         
         return pd.concat([res, res_diff], axis = 1)
     
+    def initialize_dataset(self, y):
+        """Build the dataset based on a time series feature y
+        :param x: (pandas Series) time series
+        """
+        
+        # Compute all variables
+        X = self.compute_time_series_features(y)
+        X = X.iloc[self.window-1:,:]
+        y = y.iloc[self.window-1:]
+        X = X.fillna(method='ffill').fillna(X.mean())
+        
+        return X, y
+        
     def sequential_autoencoder(self, x, num_layers, timesteps = 5):
         """LSTM Autoencoder to extract high level features
         Note that the x input is still in a raw format [m,n] where m are dates 
         and n are the features. The sequence length is still given by timesteps,
         and some data manipulation needs to be made before inputing the data in
         the model. This is why there is the function create_variable_for_model
+        :param x: (pandas Series) time series
+        :param num_layers: (int) number of layers
+        :param timesteps: (int) depth of time series for the LSTM cell
         """
         
         # Input
-        inputs = Input(shape = (timesteps, x.shape[1]))
+        inputs = Input(shape = (timesteps, x.shape[-1]))
         
         # Encoder
-        encoder = LSTM(num_layers, activation = 'tanh')(inputs)
+        encoder = LSTM(num_layers, activation = self.autoencoder_activation)(inputs)
         
         # Decoder
         decoder = RepeatVector(timesteps)(encoder)
-        decoder = LSTM(x.shape[1], return_sequences = True, activation = 'tanh')(decoder)
+        decoder = LSTM(x.shape[-1], return_sequences = True, activation = self.autoencoder_activation)(decoder)
         
         # Models
         sequential_autoencoder = Model(inputs, decoder)
@@ -253,26 +291,72 @@ class TimeSeries_Ub():
         
         return sequential_autoencoder, encoder
     
-    def forecast_model(self, x, num_layers, timesteps = 5):
+    def prepare_data_autoencoder(self, X, y):
+        """Prepare the data overall, by scaling
+        :param X: (pandas DataFrame) features
+        :param y: (pandas Series) time series
+        """
+        
+        # Initialize the two scalers
+        sc_x, sc_y = StandardScaler(), StandardScaler()
+        
+        # Convert data into proper matrix for scaling, and transform them
+        X_values, y_values = X.values, y.values.reshape(-1,1)
+        X_values, y_values = sc_x.fit_transform(X_values), sc_y.fit_transform(y_values)
+        
+        return X_values, y_values, sc_x, sc_y
+        
+    def generate_encoder(self, X, num_layers, timestep, epochs=200):
+        """Generate and fit the autoencoder. It returns the model with the best
+        validation metrics. The compression dimension is num_layers.
+        :param X: (pandas DataFrame)
+        :param: num_layers: (int)
+        :param timestep: (int)
+        :param: epochs: (int)
+        """
+        
+        checkpoint = ModelCheckpoint('autoencoder.h5', 
+                                     monitor = 'val_loss', 
+                                     verbose=1, 
+                                     save_best_only=True, 
+                                     mode='min')
+        autoencoder, encoder = self.sequential_autoencoder(X, num_layers, timestep)
+        autoencoder.fit(X, X, batch_size=256, 
+                              epochs=epochs, 
+                              validation_split=0.2, 
+                              callbacks=[checkpoint])
+        
+        autoencoder = load_model('autoencoder.h5')
+        
+        # Return only the encoder part
+        return Model(autoencoder.layers[0].input, autoencoder.layers[1].output)
+        
+    def forecast_model(self, x, num_layers, timesteps):
         """LSTM model for forecasting. 
         Note that the x input is still in a raw format [m,n] where m are dates 
         and n are the features. The sequence length is still given by timesteps,
         and some data manipulation needs to be made before inputing the data in
         the model. This is why there is the function create_variable_for_model
+        :param x: (pandas DataFrame) features
+        :param num_layers: (int) number of layers
+        :param timesteps: (int) depth of time series for the LSTM cell
         """
         
         # LSTM Model
         model = Sequential()
-        model.add(LSTM(units = num_layers, input_shape = (timesteps, x.shape[1]),
-                       activation = 'tanh'))
+        model.add(LSTM(units = num_layers, input_shape = (timesteps, x.shape[-1]),
+                       activation = self.model_activation))
         model.add(Dense(1, activation = None))
         model.compile(loss = 'mean_squared_error', optimizer = 'adam')
         
         return model
     
-    def create_variable_for_model(self, x, timesteps = 5):
+    def create_variable_for_model(self, x, timesteps):
         """Transform the variables inputs into an appropriate format for the 
-        second model. The x input needs to be already in a numpy format."""
+        second model. The x input needs to be already in a numpy format.
+        :param x: (numpy array) features
+        :param timesteps: (int) depth of time series for the LSTM cell        
+        """
         
         # Initialize output
         res = []
@@ -282,3 +366,36 @@ class TimeSeries_Ub():
             res.append(x[idx:idx+timesteps,:])
         
         return np.array(res)
+    
+    
+if __name__ == '__main__':
+
+    # -----------------------
+    # Dashboard
+    time_window = 5
+    autoencoder_activation = 'tanh'
+    model_activation = 'tanh'
+    n_layers_autoencoder = 4
+    n_units = 5
+    # -----------------------
+    
+    # Generate a random time series
+    y = pd.Series(np.random.randint(low=1, high=100, size=1000))
+        
+    alg = TimeSeries_Ub(time_window, autoencoder_activation, model_activation)
+    X, y = alg.initialize_dataset(y)
+    
+    # Scale down the data
+    x_std, y_std, sc_x, sc_y = alg.prepare_data_autoencoder(X, y)
+    x_train = alg.create_variable_for_model(x_std, time_window)
+    y_train = y_std[time_window:]
+
+    # Dimensionality reduction
+    encoder = alg.generate_encoder(x_train, n_layers_autoencoder, time_window)
+    x_train = encoder.predict(x_train)
+    
+    x_train = alg.create_variable_for_model(x_train, time_window)
+    y_train = y_train[time_window:]
+
+    model = alg.forecast_model(x_train, n_units, time_window)
+    history = model.fit(x_train, y_train)
